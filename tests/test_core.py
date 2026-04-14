@@ -100,3 +100,51 @@ class TestGatedRecurrence:
         out, state = mixer(x)
         assert out.shape == (1, 1, 32)
         assert state.shape == (1, 32)
+
+
+from ngai.core import ExpertRouter, MoEChannelMixer  # noqa: E402
+
+
+class TestExpertRouter:
+    """Tests for MoE routing."""
+
+    def test_output_shapes(self) -> None:
+        router = ExpertRouter(dim=32, n_experts=8, top_k=2)
+        x = torch.randn(10, 32)
+        weights, indices, loss = router(x)
+        assert weights.shape == (10, 2)
+        assert indices.shape == (10, 2)
+        assert loss.shape == ()
+
+    def test_weights_sum_to_one(self) -> None:
+        router = ExpertRouter(dim=32, n_experts=8, top_k=2)
+        x = torch.randn(10, 32)
+        weights, _, _ = router(x)
+        sums = weights.sum(dim=-1)
+        assert torch.allclose(sums, torch.ones_like(sums), atol=1e-5)
+
+    def test_indices_in_range(self) -> None:
+        router = ExpertRouter(dim=32, n_experts=8, top_k=2)
+        x = torch.randn(10, 32)
+        _, indices, _ = router(x)
+        assert (indices >= 0).all()
+        assert (indices < 8).all()
+
+
+class TestMoEChannelMixer:
+    """Tests for MoE channel mixer."""
+
+    def test_output_shape(self) -> None:
+        moe = MoEChannelMixer(dim=32, n_shared=1, n_routed=4, top_k=2)
+        x = torch.randn(2, 5, 32)
+        out, loss = moe(x)
+        assert out.shape == (2, 5, 32)
+        assert loss.shape == ()
+
+    def test_gradient_flows(self) -> None:
+        moe = MoEChannelMixer(dim=16, n_shared=1, n_routed=4, top_k=1)
+        x = torch.randn(1, 3, 16)
+        out, loss = moe(x)
+        (out.sum() + loss).backward()
+        assert moe.router.gate.weight.grad is not None
+        assert moe.shared_experts[0].gate.weight.grad is not None
