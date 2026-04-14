@@ -20,10 +20,10 @@ DATA_PATH = Path("data/tinyshakespeare.txt")
 DIM = 128
 N_LAYERS = 4
 SEQ_LEN = 64
-BATCH_SIZE = 32
-LR = 3e-4
+BATCH_SIZE = 500
+LR = 1e-3
 EPOCHS = 3
-LOG_EVERY = 50
+LOG_EVERY = 500
 SAMPLE_LEN = 200
 
 
