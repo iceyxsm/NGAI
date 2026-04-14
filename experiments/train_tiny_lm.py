@@ -90,7 +90,8 @@ def main() -> None:
     print("Loading TinyShakespeare...")
     dataset = CharDataset.from_file(DATA_PATH, SEQ_LEN)
     loader: DataLoader[tuple[torch.Tensor, torch.Tensor]] = DataLoader(
-        dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=True
+        dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=True,
+        num_workers=4, persistent_workers=True,
     )
 
     print(f"Vocab size: {dataset.vocab_size}")
@@ -100,6 +101,9 @@ def main() -> None:
         vocab_size=dataset.vocab_size, dim=DIM, n_layers=N_LAYERS
     )
     print(f"Model params: {model.count_parameters():,}")
+
+    print("Compiling model with torch.compile...")
+    model = torch.compile(model)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
     criterion = nn.CrossEntropyLoss()
