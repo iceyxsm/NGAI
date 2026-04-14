@@ -20,11 +20,12 @@ DATA_PATH = Path("data/tinyshakespeare.txt")
 DIM = 128
 N_LAYERS = 4
 SEQ_LEN = 64
-BATCH_SIZE = 500
-LR = 1e-3
-EPOCHS = 3
-LOG_EVERY = 500
+BATCH_SIZE = 64
+LR = 5e-4
+EPOCHS = 1
+LOG_EVERY = 50
 SAMPLE_LEN = 200
+MAX_CHARS = 100_000
 
 
 def train_epoch(
@@ -89,6 +90,8 @@ def main() -> None:
     set_seed(42)
     print("Loading TinyShakespeare...")
     dataset = CharDataset.from_file(DATA_PATH, SEQ_LEN)
+    if MAX_CHARS:
+        dataset.data = dataset.data[:MAX_CHARS]
     loader: DataLoader[tuple[torch.Tensor, torch.Tensor]] = DataLoader(
         dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=True,
         num_workers=4, persistent_workers=True,
