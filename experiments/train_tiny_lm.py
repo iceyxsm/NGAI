@@ -102,13 +102,6 @@ def main() -> None:
     )
     print(f"Model params: {model.count_parameters():,}")
 
-    # torch.compile requires MSVC on Windows — skip if unavailable
-    try:
-        model = torch.compile(model)
-        print("Model compiled with torch.compile")
-    except Exception:
-        print("torch.compile unavailable, using eager mode")
-
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
     criterion = nn.CrossEntropyLoss()
 
