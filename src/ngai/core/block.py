@@ -103,3 +103,60 @@ class NGAIBlock(nn.Module):
         x = residual + self.channel_mixer(self.norm2(x))
 
         return x, state
+
+class NGAIMoEBlock(nn.Module):
+    """NGAI block with MoE channel mixer for sparse activation.
+
+    Same as NGAIBlock but replaces the dense ChannelMixer with
+    MoEChannelMixer (shared + routed experts). Returns an additional
+    balance_loss for training.
+
+    Args:
+        dim: Hidden dimension size.
+        n_shared: Number of always-active shared experts.
+        n_routed: Number of routed experts.
+        top_k: Routed experts to activate per token.
+        expand_factor: FFN expansion ratio per expert.
+    """
+
+    DEFAULT_EXPAND = 2
+
+    def __init__(
+        self,
+        dim: int,
+        n_shared: int = 1,
+        n_routed: int = 8,
+        top_k: int = 2,
+        expand_factor: int = DEFAULT_EXPAND,
+    ) -> None:
+        super().__init__()
+        from ngai.core.moe import MoEChannelMixer
+
+        self.norm1 = RMSNorm(dim)
+        self.token_mixer = GatedRecurrence(dim)
+        self.norm2 = RMSNorm(dim)
+        self.channel_mixer = MoEChannelMixer(
+            dim, n_shared, n_routed, top_k, expand_factor
+        )
+
+    def forward(
+        self, x: Tensor, state: Tensor | None = None
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        """Forward pass through MoE block.
+
+        Args:
+            x: Input of shape (batch, seq_len, dim).
+            state: Recurrent state from previous call.
+
+        Returns:
+            Tuple of (output, new_state, balance_loss).
+        """
+        residual = x
+        mixed, state = self.token_mixer(self.norm1(x), state)
+        x = residual + mixed
+
+        residual = x
+        moe_out, balance_loss = self.channel_mixer(self.norm2(x))
+        x = residual + moe_out
+
+        return x, state, balance_loss

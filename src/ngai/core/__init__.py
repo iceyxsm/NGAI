@@ -8,7 +8,7 @@ Provides the fundamental building blocks for NGAI:
 - Mixture of Experts with shared + routed experts
 """
 
-from ngai.core.block import ChannelMixer, NGAIBlock, RMSNorm
+from ngai.core.block import ChannelMixer, NGAIBlock, NGAIMoEBlock, RMSNorm
 from ngai.core.linear import TernaryLinear
 from ngai.core.moe import ExpertRouter, MoEChannelMixer
 from ngai.core.ternary import ternary_quantize
@@ -20,6 +20,7 @@ __all__ = [
     "GatedRecurrence",
     "MoEChannelMixer",
     "NGAIBlock",
+    "NGAIMoEBlock",
     "RMSNorm",
     "TernaryLinear",
     "ternary_quantize",
