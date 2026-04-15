@@ -31,3 +31,9 @@ htmlcov/
 .mypy_cache/
 
 .ruff_cache
+
+
+# Build artifacts
+ngai-cpp/*.exe
+ngai-cpp/*.o
+ngai-cpp/build/
