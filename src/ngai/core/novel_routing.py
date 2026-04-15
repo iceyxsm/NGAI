@@ -167,15 +167,13 @@ class CrossLayerExpertPool(nn.Module):
         Returns:
             Routed output of shape (n_tokens, dim).
         """
+        n_tokens = x.shape[0]
+        all_expert_out = torch.stack([expert(x) for expert in self.experts])
         routed_out = torch.zeros_like(x)
         top_k = indices.shape[-1]
-
         for k in range(top_k):
-            expert_idx = indices[:, k]
+            idx = indices[:, k]
             w = weights[:, k].unsqueeze(-1)
-            for i, expert in enumerate(self.experts):
-                mask = expert_idx == i
-                if mask.any():
-                    routed_out[mask] += w[mask] * expert(x[mask])
-
+            selected = all_expert_out[idx, torch.arange(n_tokens)]
+            routed_out = routed_out + w * selected
         return routed_out

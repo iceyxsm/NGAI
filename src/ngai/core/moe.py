@@ -90,7 +90,7 @@ class MoEChannelMixer(nn.Module):
         self.router = ExpertRouter(dim, n_routed, top_k)
 
     def forward(self, x: Tensor) -> tuple[Tensor, Tensor]:
-        """Forward pass through MoE channel mixer.
+        """Forward pass through MoE channel mixer (vectorized).
 
         Args:
             x: Input of shape (batch, seq_len, dim).
@@ -100,6 +100,7 @@ class MoEChannelMixer(nn.Module):
         """
         batch, seq_len, dim = x.shape
         flat = x.reshape(-1, dim)
+        n_tokens = flat.shape[0]
 
         # Shared experts: always active
         shared_out = torch.zeros_like(flat)
@@ -109,15 +110,20 @@ class MoEChannelMixer(nn.Module):
         # Router selects top-k routed experts per token
         weights, indices, balance_loss = self.router(flat)
 
-        # Compute routed expert outputs
+        # Vectorized: run all experts, stack, then gather
+        # Shape: (n_routed, n_tokens, dim)
+        all_expert_out = torch.stack(
+            [expert(flat) for expert in self.routed_experts]
+        )
+
+        # Gather selected expert outputs for each token
+        # indices: (n_tokens, top_k) -> expand to (top_k, n_tokens, dim)
         routed_out = torch.zeros_like(flat)
         for k in range(self.top_k):
-            expert_idx = indices[:, k]
+            idx = indices[:, k]
             w = weights[:, k].unsqueeze(-1)
-            for i, expert in enumerate(self.routed_experts):
-                mask = expert_idx == i
-                if mask.any():
-                    routed_out[mask] += w[mask] * expert(flat[mask])
+            selected = all_expert_out[idx, torch.arange(n_tokens)]
+            routed_out = routed_out + w * selected
 
         output = shared_out + routed_out
         return output.reshape(batch, seq_len, dim), balance_loss
