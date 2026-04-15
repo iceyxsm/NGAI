@@ -148,3 +148,83 @@ class TestMoEChannelMixer:
         (out.sum() + loss).backward()
         assert moe.router.gate.weight.grad is not None
         assert moe.shared_experts[0].gate.weight.grad is not None
+
+
+from ngai.core.novel_routing import (  # noqa: E402
+    AdaptiveRouter,
+    CrossLayerExpertPool,
+    StateAwareRouter,
+)
+
+
+class TestStateAwareRouter:
+    """Tests for state-aware routing."""
+
+    def test_output_shapes(self) -> None:
+        router = StateAwareRouter(dim=32, n_experts=8, top_k=2)
+        x = torch.randn(10, 32)
+        state = torch.randn(10, 32)
+        weights, indices, _loss = router(x, state)
+        assert weights.shape == (10, 2)
+        assert indices.shape == (10, 2)
+
+    def test_works_without_state(self) -> None:
+        router = StateAwareRouter(dim=32, n_experts=8, top_k=2)
+        x = torch.randn(10, 32)
+        weights, _indices, _loss = router(x)
+        assert weights.shape == (10, 2)
+
+    def test_state_changes_routing(self) -> None:
+        router = StateAwareRouter(dim=32, n_experts=4, top_k=2)
+        x = torch.randn(5, 32)
+        s1 = torch.randn(5, 32)
+        s2 = torch.randn(5, 32) * 10
+        _, idx1, _ = router(x, s1)
+        _, idx2, _ = router(x, s2)
+        assert not torch.equal(idx1, idx2)
+
+
+class TestAdaptiveRouter:
+    """Tests for adaptive sparsity routing."""
+
+    def test_output_shapes(self) -> None:
+        router = AdaptiveRouter(dim=32, n_experts=8, max_k=4)
+        x = torch.randn(10, 32)
+        weights, indices, _loss, avg_k = router(x)
+        assert weights.shape == (10, 4)
+        assert indices.shape == (10, 4)
+        assert avg_k.shape == ()
+
+    def test_avg_k_in_range(self) -> None:
+        router = AdaptiveRouter(dim=32, n_experts=8, max_k=4)
+        x = torch.randn(20, 32)
+        _, _, _, avg_k = router(x)
+        assert 1.0 <= avg_k.item() <= 4.0
+
+    def test_gradient_flows(self) -> None:
+        router = AdaptiveRouter(dim=16, n_experts=4, max_k=2)
+        x = torch.randn(5, 16)
+        weights, _, loss, _ = router(x)
+        (weights.sum() + loss).backward()
+        assert router.gate.weight.grad is not None
+
+
+class TestCrossLayerExpertPool:
+    """Tests for shared expert pool."""
+
+    def test_output_shape(self) -> None:
+        pool = CrossLayerExpertPool(dim=32, n_experts=4)
+        x = torch.randn(10, 32)
+        weights = torch.ones(10, 2) * 0.5
+        indices = torch.randint(0, 4, (10, 2))
+        out = pool(x, weights, indices)
+        assert out.shape == (10, 32)
+
+    def test_gradient_flows(self) -> None:
+        pool = CrossLayerExpertPool(dim=16, n_experts=4)
+        x = torch.randn(5, 16)
+        weights = torch.ones(5, 1) * 1.0
+        indices = torch.zeros(5, 1, dtype=torch.long)
+        out = pool(x, weights, indices)
+        out.sum().backward()
+        assert pool.experts[0].gate.weight.grad is not None
