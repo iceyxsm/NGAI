@@ -3,7 +3,7 @@
 
 static constexpr size_t DIM = 4096;
 static constexpr size_t WARMUP = 10;
-static constexpr size_t BENCH_ITERS = 1000;
+static constexpr size_t BENCH_ITERS = 100;
 
 int main() {
     std::cout << "NGAI C++ Inference Engine - Ternary Benchmark\n";
