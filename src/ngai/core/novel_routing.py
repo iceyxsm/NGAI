@@ -89,14 +89,15 @@ class AdaptiveRouter(nn.Module):
         self.gate = TernaryLinear(dim, n_experts)
         self.difficulty = TernaryLinear(dim, 1)
 
-    def forward(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor, Tensor]:
+    def forward(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         """Route tokens with adaptive expert count.
 
         Args:
             x: Input of shape (n_tokens, dim).
 
         Returns:
-            Tuple of (weights, indices, balance_loss, avg_k).
+            Tuple of (weights, indices, balance_loss).
+            Access self.last_avg_k for monitoring.
         """
         logits = self.gate(x)
         probs = F.softmax(logits, dim=-1)
@@ -124,9 +125,9 @@ class AdaptiveRouter(nn.Module):
         p = probs.mean(dim=0)
         balance_loss = self.n_experts * (f * p).sum()
 
-        avg_k = k_per_token.float().mean()
+        self.last_avg_k = k_per_token.float().mean()
 
-        return weights, indices, balance_loss, avg_k
+        return weights, indices, balance_loss
 
 
 class CrossLayerExpertPool(nn.Module):

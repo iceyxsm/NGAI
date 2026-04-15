@@ -190,21 +190,20 @@ class TestAdaptiveRouter:
     def test_output_shapes(self) -> None:
         router = AdaptiveRouter(dim=32, n_experts=8, max_k=4)
         x = torch.randn(10, 32)
-        weights, indices, _loss, avg_k = router(x)
+        weights, indices, _loss = router(x)
         assert weights.shape == (10, 4)
         assert indices.shape == (10, 4)
-        assert avg_k.shape == ()
 
     def test_avg_k_in_range(self) -> None:
         router = AdaptiveRouter(dim=32, n_experts=8, max_k=4)
         x = torch.randn(20, 32)
-        _, _, _, avg_k = router(x)
-        assert 1.0 <= avg_k.item() <= 4.0
+        _, _, _ = router(x)
+        assert 1.0 <= router.last_avg_k.item() <= 4.0
 
     def test_gradient_flows(self) -> None:
         router = AdaptiveRouter(dim=16, n_experts=4, max_k=2)
         x = torch.randn(5, 16)
-        weights, _, loss, _ = router(x)
+        weights, _, loss = router(x)
         (weights.sum() + loss).backward()
         assert router.gate.weight.grad is not None
 
