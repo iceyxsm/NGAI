@@ -1,1 +1,0 @@
-(ngai) PS E:\OCD-DEVS\NGAI run python experiments/compare_dense_vs_moe.py   Loading TinyShakespeare...  Vocab: 65, Data: 99,936 seqs=======================================================DENSE MODEL (NGAILanguageModel)=======================================================Total params: 1,067,392step  100 
