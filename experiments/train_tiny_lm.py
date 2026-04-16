@@ -16,6 +16,8 @@ from ngai.data.text_dataset import CharDataset
 from ngai.models.ngai_lm import NGAILanguageModel
 from ngai.utils.seed import set_seed
 
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 DATA_PATH = Path("data/tinyshakespeare.txt")
 DIM = 128
 N_LAYERS = 4
@@ -41,6 +43,7 @@ def train_epoch(
     n_batches = 0
 
     for i, (x, y) in enumerate(loader):
+        x, y = x.to(DEVICE), y.to(DEVICE)
         logits, _ = model(x)
         loss = criterion(logits.view(-1, model.vocab_size), y.view(-1))
 
@@ -69,7 +72,7 @@ def generate(
     """Generate text from a prompt."""
     model.eval()
     indices = [dataset.char_to_idx.get(c, 0) for c in prompt]
-    tokens = torch.tensor([indices], dtype=torch.long)
+    tokens = torch.tensor([indices], dtype=torch.long, device=DEVICE)
     states: list[torch.Tensor] | None = None
 
     logits, states = model(tokens, states)
@@ -97,12 +100,13 @@ def main() -> None:
         num_workers=4, persistent_workers=True,
     )
 
+    print(f"Device: {DEVICE}")
     print(f"Vocab size: {dataset.vocab_size}")
     print(f"Dataset size: {len(dataset):,} sequences")
 
     model = NGAILanguageModel(
         vocab_size=dataset.vocab_size, dim=DIM, n_layers=N_LAYERS
-    )
+    ).to(DEVICE)
     print(f"Model params: {model.count_parameters():,}")
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR)

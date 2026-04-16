@@ -21,6 +21,8 @@ from ngai.models.ngai_lm import NGAILanguageModel
 from ngai.models.ngai_moe_lm import NGAIMoELanguageModel
 from ngai.utils.seed import set_seed
 
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 DATA_PATH = Path("data/tinyshakespeare.txt")
 DIM = 128
 N_LAYERS = 4
@@ -57,6 +59,8 @@ def train_steps(
         except StopIteration:
             return losses
 
+        x, y = x.to(DEVICE), y.to(DEVICE)
+
         if is_moe:
             logits, _, balance_loss = model(x)
             ce_loss = criterion(logits.view(-1, logits.size(-1)), y.view(-1))
@@ -83,7 +87,7 @@ def generate(model: nn.Module, dataset: CharDataset, prompt: str) -> str:
     """Generate text from a model."""
     model.eval()
     indices = [dataset.char_to_idx.get(c, 0) for c in prompt]
-    tokens = torch.tensor([indices], dtype=torch.long)
+    tokens = torch.tensor([indices], dtype=torch.long, device=DEVICE)
     is_moe = isinstance(model, NGAIMoELanguageModel)
 
     if is_moe:
@@ -114,6 +118,7 @@ def main() -> None:
         dataset, batch_size=BATCH_SIZE, shuffle=True, drop_last=True,
     )
     vocab = dataset.vocab_size
+    print(f"Device: {DEVICE}")
     print(f"Vocab: {vocab}, Data: {len(dataset):,} seqs\n")
 
     # --- Dense model ---
@@ -121,7 +126,7 @@ def main() -> None:
     print("  DENSE MODEL (NGAILanguageModel)")
     print("=" * 55)
     set_seed(42)
-    dense = NGAILanguageModel(vocab, DIM, N_LAYERS)
+    dense = NGAILanguageModel(vocab, DIM, N_LAYERS).to(DEVICE)
     dense_params = dense.count_parameters()
     print(f"  Total params: {dense_params:,}")
     opt_d = torch.optim.AdamW(dense.parameters(), lr=LR)
@@ -138,7 +143,7 @@ def main() -> None:
     set_seed(42)
     moe = NGAIMoELanguageModel(
         vocab, DIM, N_LAYERS, N_SHARED, N_ROUTED, TOP_K, MOE_EXPAND
-    )
+    ).to(DEVICE)
     moe_total = moe.count_parameters()
     moe_active = moe.count_active_parameters()
     print(f"  Total params: {moe_total:,}")

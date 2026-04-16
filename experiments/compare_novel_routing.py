@@ -21,6 +21,7 @@ from ngai.data.text_dataset import CharDataset
 from ngai.models.ngai_moe_lm import NGAIMoELanguageModel
 from ngai.utils.seed import set_seed
 
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 DATA_PATH = Path("data/tinyshakespeare.txt")
 DIM = 128
 N_LAYERS = 4
