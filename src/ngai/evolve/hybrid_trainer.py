@@ -46,6 +46,7 @@ class HybridEvolveTrainer:
     DEFAULT_RATE = 0.001
     DEFAULT_GOODNESS_SCALE = 2.0
     GOODNESS_INTERVAL = 10
+    WARMUP_STEPS = 50
     LOG_EVERY = 50
 
     def __init__(
@@ -55,12 +56,14 @@ class HybridEvolveTrainer:
         mutation_rate: float = DEFAULT_RATE,
         goodness_scale: float = DEFAULT_GOODNESS_SCALE,
         goodness_interval: int = GOODNESS_INTERVAL,
+        warmup_steps: int = WARMUP_STEPS,
         device: torch.device | None = None,
     ) -> None:
         self.model = model
         self.device = device or torch.device("cpu")
         self.pop_size = pop_size
         self.goodness_interval = goodness_interval
+        self.warmup_steps = warmup_steps
 
         self.guided_mutator = GuidedMutator(
             model, base_rate=mutation_rate,
@@ -103,7 +106,11 @@ class HybridEvolveTrainer:
         x, y = x.to(self.device), y.to(self.device)
         base_weights = self._get_flat_weights()
 
-        if self.step_count % self.goodness_interval == 0:
+        use_goodness = (
+            self.step_count >= self.warmup_steps
+            and self.step_count % self.goodness_interval == 0
+        )
+        if use_goodness:
             loss, activations = self.evaluator.evaluate_with_goodness(
                 base_weights, x, y,
             )

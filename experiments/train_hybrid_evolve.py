@@ -32,10 +32,11 @@ BATCH_SIZE = 32
 MAX_CHARS = 50_000
 STEPS = 500
 
-HYBRID_POP = 64
-HYBRID_RATE = 0.0005
-HYBRID_GOODNESS_SCALE = 2.0
+HYBRID_POP = 32
+HYBRID_RATE = 0.0001
+HYBRID_GOODNESS_SCALE = 1.0
 HYBRID_GOODNESS_INTERVAL = 10
+HYBRID_WARMUP = 100
 
 BASELINE_POP = 32
 BASELINE_RATE = 0.0001
@@ -79,7 +80,7 @@ def run_hybrid(dataset: CharDataset, vocab: int) -> list[float]:
     print("HYBRID: Goodness-Guided Evolutionary Trainer")
     print(
         f"  Pop: {HYBRID_POP}, Rate: {HYBRID_RATE}, "
-        f"Goodness scale: {HYBRID_GOODNESS_SCALE}"
+        f"Goodness scale: {HYBRID_GOODNESS_SCALE}, Warmup: {HYBRID_WARMUP}"
     )
     print("=" * 60)
 
@@ -93,6 +94,7 @@ def run_hybrid(dataset: CharDataset, vocab: int) -> list[float]:
         mutation_rate=HYBRID_RATE,
         goodness_scale=HYBRID_GOODNESS_SCALE,
         goodness_interval=HYBRID_GOODNESS_INTERVAL,
+        warmup_steps=HYBRID_WARMUP,
         device=DEVICE,
     )
     loader = make_loader(dataset)

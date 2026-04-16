@@ -55,8 +55,8 @@ class GuidedMutator:
 
     BASE_RATE = 0.005
     GOODNESS_SCALE = 2.0
-    MIN_RATE_FACTOR = 0.1
-    MAX_RATE_FACTOR = 5.0
+    MIN_RATE_FACTOR = 0.5
+    MAX_RATE_FACTOR = 2.0
 
     def __init__(
         self,
