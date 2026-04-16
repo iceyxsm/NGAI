@@ -79,9 +79,17 @@ class GatedRecurrence(nn.Module):
             output = self.output(r * state.unsqueeze(1))
             return output, state
 
-        # Chunked recurrence: process CHUNK_SIZE tokens at a time
-        # Linear projections (r, k, v) are already batched above
-        # Only the sequential state update runs in a loop
+        # Use CUDA kernel if available, else Python fallback
+        if kv.is_cuda:
+            try:
+                from ngai.core.recurrence_cuda import cuda_recurrence
+                states = cuda_recurrence(kv, w, state)
+                output = self.output(r * states)
+                return output, states[:, -1]
+            except Exception:
+                pass
+
+        # Python fallback for CPU
         all_states = []
         for t in range(seq_len):
             state = w * state + kv[:, t]
