@@ -84,22 +84,33 @@ class EvolveTrainer:
             Best loss from this step.
         """
         x, y = x.to(self.device), y.to(self.device)
+
+        # Always start from best known weights
         base_weights = self._get_flat_weights()
         variants = self.mutator.batch_mutate(base_weights, self.population.pop_size)
+
+        # Also evaluate the current (unmutated) weights
+        current_loss = self._evaluate_variant(base_weights, x, y)
 
         losses = torch.zeros(self.population.pop_size, device=self.device)
         for i in range(self.population.pop_size):
             losses[i] = self._evaluate_variant(variants[i], x, y)
 
         best_idx = losses.argmin()
-        best_loss = losses[best_idx].item()
+        best_variant_loss = losses[best_idx].item()
 
-        if best_loss < self.best_loss:
+        # Only update if a variant beats current weights on this batch
+        if best_variant_loss < current_loss:
             self._set_flat_weights(variants[best_idx])
-            self.best_loss = best_loss
+            self.best_loss = min(self.best_loss, best_variant_loss)
+        else:
+            # Restore current weights (evaluate_variant changes them)
+            self._set_flat_weights(base_weights)
+            self.best_loss = min(self.best_loss, current_loss)
 
-        self.population.record_fitness(best_loss)
-        return best_loss
+        step_best = min(current_loss, best_variant_loss)
+        self.population.record_fitness(step_best)
+        return step_best
 
     def train(self, dataloader: DataLoader, steps: int) -> list[float]:
         """Run evolutionary training.
