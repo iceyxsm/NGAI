@@ -153,8 +153,6 @@ class ESTrainer:
         x, y = x.to(self.device), y.to(self.device)
         base_weights = self._get_flat_weights()
 
-        base_loss = self._evaluate(base_weights, x, y)
-
         noise = torch.randn(
             self.pop_size, self._total_params, device=self.device,
         )
@@ -179,15 +177,9 @@ class ESTrainer:
         )
 
         new_weights = base_weights + self.lr * self._velocity
-        new_weights = self._requantize_ternary(new_weights)
 
-        new_loss = self._evaluate(new_weights, x, y)
-        if new_loss < base_loss:
-            self._set_flat_weights(new_weights)
-            step_loss = new_loss
-        else:
-            self._set_flat_weights(base_weights)
-            step_loss = base_loss
+        self._set_flat_weights(new_weights)
+        step_loss = self._evaluate(new_weights, x, y)
 
         self.best_loss = min(self.best_loss, step_loss)
         self.sigma = max(self.MIN_SIGMA, self.sigma * self.SIGMA_DECAY)
