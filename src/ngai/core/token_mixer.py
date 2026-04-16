@@ -45,6 +45,10 @@ class GatedRecurrence(nn.Module):
     ) -> tuple[Tensor, Tensor]:
         """Process a sequence through gated recurrence.
 
+        Uses a vectorized parallel scan instead of a Python for-loop.
+        For training (full sequences), computes all timesteps in parallel.
+        For inference (single token), falls back to sequential update.
+
         Args:
             x: Input tensor of shape (batch, seq_len, dim).
             state: Previous hidden state of shape (batch, dim).
@@ -65,15 +69,44 @@ class GatedRecurrence(nn.Module):
         v = self.value(x)
 
         w = torch.exp(-torch.exp(self.decay))
+        bonus_scale = torch.exp(self.bonus)
 
-        outputs = []
-        for t in range(seq_len):
-            k_t = k[:, t]
-            v_t = v[:, t]
-            bonus = torch.exp(self.bonus) * k_t * v_t
-            state = w * state + k_t * v_t + bonus
-            outputs.append(r[:, t] * state)
+        # kv = k * v + bonus * k * v = (1 + bonus) * k * v
+        kv = (1.0 + bonus_scale) * k * v
 
-        output = torch.stack(outputs, dim=1)
-        output = self.output(output)
-        return output, state
+        if seq_len == 1:
+            state = w * state + kv[:, 0]
+            output = self.output(r * state.unsqueeze(1))
+            return output, state
+
+        # Vectorized parallel scan for the linear recurrence:
+        # state_t = w * state_{t-1} + kv_t
+        # This is equivalent to: state_t = sum_{i=0}^{t} w^{t-i} * kv_i
+        # Compute using cumulative sum with exponential weights
+        powers = torch.arange(seq_len, device=x.device, dtype=x.dtype)
+        log_w = torch.log(w + 1e-8)
+        # decay_matrix[t] = w^t (broadcast over dim)
+        decay_powers = torch.exp(
+            powers.unsqueeze(-1) * log_w.unsqueeze(0)
+        )
+
+        # Scale kv by inverse decay so cumsum gives correct result
+        # kv_scaled[t] = kv[t] / w^t
+        inv_decay = torch.exp(
+            -powers.unsqueeze(-1) * log_w.unsqueeze(0)
+        )
+        kv_scaled = kv * inv_decay.unsqueeze(0)
+
+        # Cumulative sum in the scaled domain
+        cumsum = torch.cumsum(kv_scaled, dim=1)
+
+        # Apply decay to get actual states: state[t] = w^t * cumsum[t]
+        states = decay_powers.unsqueeze(0) * cumsum
+
+        # Add contribution from initial state
+        init_contrib = state.unsqueeze(1) * decay_powers.unsqueeze(0)
+        states = states + init_contrib
+
+        output = self.output(r * states)
+        final_state = states[:, -1]
+        return output, final_state
