@@ -5,6 +5,7 @@ ternary mutations, and parallel layer training for
 maximum GPU utilization without backpropagation.
 """
 
+from ngai.evolve.batched_es import MegaBatchEvaluator
 from ngai.evolve.cuda_batch_eval import BatchedPopulationEvaluator
 from ngai.evolve.es_trainer import ESTrainer
 from ngai.evolve.evaluator import GoodnessEvaluator
@@ -22,6 +23,7 @@ __all__ = [
     "GoodnessEvaluator",
     "GuidedMutator",
     "HybridEvolveTrainer",
+    "MegaBatchEvaluator",
     "Population",
     "TernaryMutator",
     "VmapPopulationEvaluator",
