@@ -65,7 +65,7 @@ class ESTrainer:
         momentum: float = DEFAULT_MOMENTUM,
         weight_decay: float = DEFAULT_WEIGHT_DECAY,
         eval_batches: int = DEFAULT_EVAL_BATCHES,
-        use_vmap: bool = True,
+        use_vmap: bool = False,
         device: torch.device | None = None,
     ) -> None:
         self.model = model
@@ -87,8 +87,11 @@ class ESTrainer:
 
         self._vmap_eval = None
         if use_vmap:
-            from ngai.evolve.vmap_eval import VmapPopulationEvaluator
-            self._vmap_eval = VmapPopulationEvaluator(model, self.device)
+            try:
+                from ngai.evolve.vmap_eval import VmapPopulationEvaluator
+                self._vmap_eval = VmapPopulationEvaluator(model, self.device)
+            except ImportError:
+                pass
 
     def _cosine_lr(self) -> float:
         """Compute current LR using cosine annealing schedule.
