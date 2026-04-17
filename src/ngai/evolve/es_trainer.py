@@ -200,7 +200,7 @@ class ESTrainer:
         all_flat_weights: Tensor,
         batches: list[tuple[Tensor, Tensor]],
     ) -> Tensor:
-        """Evaluate all variants with direct weight injection.
+        """Evaluate all variants using fast zero-copy weight injection.
 
         Args:
             all_flat_weights: Shape (n_variants, total_params).
@@ -209,11 +209,19 @@ class ESTrainer:
         Returns:
             Losses of shape (n_variants,).
         """
+        x, y = batches[0]
+        if len(batches) == 1:
+            return self._mega_eval.evaluate_population_fast(
+                all_flat_weights, x, y,
+            )
+
         n_variants = all_flat_weights.shape[0]
         losses = torch.zeros(n_variants, device=self.device)
-        for i in range(n_variants):
-            losses[i] = self._evaluate_multi(all_flat_weights[i], batches)
-        return losses
+        for bx, by in batches:
+            losses += self._mega_eval.evaluate_population_fast(
+                all_flat_weights, bx, by,
+            )
+        return losses / len(batches)
 
     @torch.no_grad()
     def train_step(self, batches: list[tuple[Tensor, Tensor]]) -> float:
@@ -265,7 +273,7 @@ class ESTrainer:
             - current_lr * self.weight_decay * base_weights
         )
 
-        self._set_flat_weights(new_weights)
+        self._mega_eval._inject_weights(new_weights)
         step_loss = self._evaluate_multi(new_weights, batches)
 
         self.best_loss = min(self.best_loss, step_loss)
