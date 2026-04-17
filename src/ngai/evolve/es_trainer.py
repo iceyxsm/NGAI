@@ -65,6 +65,7 @@ class ESTrainer:
         momentum: float = DEFAULT_MOMENTUM,
         weight_decay: float = DEFAULT_WEIGHT_DECAY,
         eval_batches: int = DEFAULT_EVAL_BATCHES,
+        use_vmap: bool = True,
         device: torch.device | None = None,
     ) -> None:
         self.model = model
@@ -83,6 +84,11 @@ class ESTrainer:
 
         self._total_params = sum(p.numel() for p in model.parameters())
         self._velocity = torch.zeros(self._total_params, device=self.device)
+
+        self._vmap_eval = None
+        if use_vmap:
+            from ngai.evolve.vmap_eval import VmapPopulationEvaluator
+            self._vmap_eval = VmapPopulationEvaluator(model, self.device)
 
     def _cosine_lr(self) -> float:
         """Compute current LR using cosine annealing schedule.
@@ -183,6 +189,34 @@ class ESTrainer:
         return batches, loader_iter
 
     @torch.no_grad()
+    def _evaluate_all_variants(
+        self,
+        all_flat_weights: Tensor,
+        batches: list[tuple[Tensor, Tensor]],
+    ) -> Tensor:
+        """Evaluate all variants, using vmap if available.
+
+        Args:
+            all_flat_weights: Shape (n_variants, total_params).
+            batches: List of (x, y) batch tuples.
+
+        Returns:
+            Losses of shape (n_variants,).
+        """
+        n_variants = all_flat_weights.shape[0]
+
+        if self._vmap_eval is not None and len(batches) == 1:
+            x, y = batches[0]
+            return self._vmap_eval.evaluate_population_vmap(
+                all_flat_weights, x, y,
+            )
+
+        losses = torch.zeros(n_variants, device=self.device)
+        for i in range(n_variants):
+            losses[i] = self._evaluate_multi(all_flat_weights[i], batches)
+        return losses
+
+    @torch.no_grad()
     def train_step(self, batches: list[tuple[Tensor, Tensor]]) -> float:
         """One ES training step with antithetic sampling.
 
@@ -204,20 +238,23 @@ class ESTrainer:
             self.pop_size, self._total_params, device=self.device,
         )
 
-        all_losses = torch.zeros(self.pop_size * 2, device=self.device)
-        for i in range(self.pop_size):
-            pos_weights = base_weights + self.sigma * noise[i]
-            neg_weights = base_weights - self.sigma * noise[i]
-            all_losses[i * 2] = self._evaluate_multi(pos_weights, batches)
-            all_losses[i * 2 + 1] = self._evaluate_multi(neg_weights, batches)
+        # Build all perturbed weight vectors: [pos_0, neg_0, pos_1, neg_1, ...]
+        pos_weights = base_weights.unsqueeze(0) + self.sigma * noise
+        neg_weights = base_weights.unsqueeze(0) - self.sigma * noise
+        # Interleave: (2*pop_size, total_params)
+        all_weights = torch.stack(
+            [pos_weights, neg_weights], dim=1,
+        ).view(-1, self._total_params)
+
+        all_losses = self._evaluate_all_variants(all_weights, batches)
 
         shaped = self._fitness_shaping(all_losses)
 
-        grad_estimate = torch.zeros(self._total_params, device=self.device)
-        for i in range(self.pop_size):
-            diff = shaped[i * 2] - shaped[i * 2 + 1]
-            grad_estimate += diff * noise[i]
-        grad_estimate /= (self.pop_size * self.sigma)
+        # Vectorized gradient estimate: sum of (shaped_pos - shaped_neg) * noise
+        pos_shaped = shaped[0::2]  # even indices
+        neg_shaped = shaped[1::2]  # odd indices
+        diffs = (pos_shaped - neg_shaped).unsqueeze(1)  # (pop_size, 1)
+        grad_estimate = (diffs * noise).sum(dim=0) / (self.pop_size * self.sigma)
 
         self._velocity = (
             self.momentum * self._velocity + (1 - self.momentum) * grad_estimate

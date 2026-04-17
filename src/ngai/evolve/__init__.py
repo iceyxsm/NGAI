@@ -13,6 +13,7 @@ from ngai.evolve.hybrid_trainer import HybridEvolveTrainer
 from ngai.evolve.mutator import TernaryMutator
 from ngai.evolve.population import Population
 from ngai.evolve.trainer import EvolveTrainer
+from ngai.evolve.vmap_eval import VmapPopulationEvaluator
 
 __all__ = [
     "BatchedPopulationEvaluator",
@@ -23,4 +24,5 @@ __all__ = [
     "HybridEvolveTrainer",
     "Population",
     "TernaryMutator",
+    "VmapPopulationEvaluator",
 ]
