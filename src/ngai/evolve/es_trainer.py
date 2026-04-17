@@ -44,9 +44,8 @@ class ESTrainer:
     DEFAULT_SIGMA = 0.1
     DEFAULT_LR = 0.01
     DEFAULT_MOMENTUM = 0.9
+    DEFAULT_WEIGHT_DECAY = 0.001
     LOG_EVERY = 50
-    SIGMA_DECAY = 0.999
-    MIN_SIGMA = 0.01
 
     def __init__(
         self,
@@ -55,6 +54,7 @@ class ESTrainer:
         sigma: float = DEFAULT_SIGMA,
         lr: float = DEFAULT_LR,
         momentum: float = DEFAULT_MOMENTUM,
+        weight_decay: float = DEFAULT_WEIGHT_DECAY,
         device: torch.device | None = None,
     ) -> None:
         self.model = model
@@ -63,6 +63,7 @@ class ESTrainer:
         self.sigma = sigma
         self.lr = lr
         self.momentum = momentum
+        self.weight_decay = weight_decay
         self.best_loss = float("inf")
         self.step_count = 0
 
@@ -176,13 +177,15 @@ class ESTrainer:
             self.momentum * self._velocity + (1 - self.momentum) * grad_estimate
         )
 
-        new_weights = base_weights + self.lr * self._velocity
+        new_weights = (
+            base_weights + self.lr * self._velocity
+            - self.lr * self.weight_decay * base_weights
+        )
 
         self._set_flat_weights(new_weights)
         step_loss = self._evaluate(new_weights, x, y)
 
         self.best_loss = min(self.best_loss, step_loss)
-        self.sigma = max(self.MIN_SIGMA, self.sigma * self.SIGMA_DECAY)
         self.step_count += 1
         return step_loss
 
@@ -216,8 +219,7 @@ class ESTrainer:
                 sps = (step + 1) / elapsed
                 print(
                     f"  step {step + 1:>5} | loss {avg:.4f} | "
-                    f"best {self.best_loss:.4f} | {sps:.1f} steps/s | "
-                    f"sigma {self.sigma:.4f}"
+                    f"best {self.best_loss:.4f} | {sps:.1f} steps/s"
                 )
 
         return losses
