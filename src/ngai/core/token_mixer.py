@@ -86,7 +86,7 @@ class GatedRecurrence(nn.Module):
                 states = cuda_recurrence(kv, w, state)
                 output = self.output(r * states)
                 return output, states[:, -1]
-            except ImportError:
+            except (ImportError, RuntimeError):
                 pass
 
         # Python fallback for CPU
