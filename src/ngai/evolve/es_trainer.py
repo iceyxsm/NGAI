@@ -9,13 +9,16 @@ ternary weights. Key improvements over naive evolutionary search:
    from dominating the update.
 3. Momentum: exponential moving average of the update direction,
    biasing future mutations toward historically good directions.
-4. Adaptive noise: scale noise based on recent improvement rate.
+4. Cosine LR schedule: high LR for exploration, decays to fine-tune.
+5. Multi-batch evaluation: average loss over multiple batches per
+   variant to reduce noise in the gradient estimate.
 
 Reference: Salimans et al. "Evolution Strategies as a Scalable
 Alternative to Reinforcement Learning" (2017), adapted for
 discrete ternary weight spaces.
 """
 
+import math
 import time
 
 import torch
@@ -35,16 +38,21 @@ class ESTrainer:
         model: The NGAI model to train.
         pop_size: Number of perturbation pairs (total evals = 2x this).
         sigma: Noise standard deviation.
-        lr: Learning rate for weight updates.
+        lr: Peak learning rate for weight updates.
+        lr_min_ratio: Minimum LR as fraction of peak (for cosine schedule).
         momentum: Momentum coefficient for update direction.
+        weight_decay: L2 weight decay coefficient.
+        eval_batches: Number of batches to average per variant evaluation.
         device: Device to train on.
     """
 
     DEFAULT_POP = 16
     DEFAULT_SIGMA = 0.1
     DEFAULT_LR = 0.01
+    DEFAULT_LR_MIN_RATIO = 0.1
     DEFAULT_MOMENTUM = 0.9
     DEFAULT_WEIGHT_DECAY = 0.001
+    DEFAULT_EVAL_BATCHES = 1
     LOG_EVERY = 50
 
     def __init__(
@@ -53,22 +61,40 @@ class ESTrainer:
         pop_size: int = DEFAULT_POP,
         sigma: float = DEFAULT_SIGMA,
         lr: float = DEFAULT_LR,
+        lr_min_ratio: float = DEFAULT_LR_MIN_RATIO,
         momentum: float = DEFAULT_MOMENTUM,
         weight_decay: float = DEFAULT_WEIGHT_DECAY,
+        eval_batches: int = DEFAULT_EVAL_BATCHES,
         device: torch.device | None = None,
     ) -> None:
         self.model = model
         self.device = device or torch.device("cpu")
         self.pop_size = pop_size
         self.sigma = sigma
+        self.lr_peak = lr
+        self.lr_min = lr * lr_min_ratio
         self.lr = lr
         self.momentum = momentum
         self.weight_decay = weight_decay
+        self.eval_batches = eval_batches
         self.best_loss = float("inf")
         self.step_count = 0
+        self.total_steps = 0
 
         self._total_params = sum(p.numel() for p in model.parameters())
         self._velocity = torch.zeros(self._total_params, device=self.device)
+
+    def _cosine_lr(self) -> float:
+        """Compute current LR using cosine annealing schedule.
+
+        Returns:
+            Current learning rate.
+        """
+        if self.total_steps <= 0:
+            return self.lr_peak
+        progress = min(1.0, self.step_count / self.total_steps)
+        cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+        return self.lr_min + (self.lr_peak - self.lr_min) * cosine
 
     def _get_flat_weights(self) -> Tensor:
         """Flatten all model weights into a single tensor."""
@@ -84,7 +110,7 @@ class ESTrainer:
 
     @torch.no_grad()
     def _evaluate(self, flat_weights: Tensor, x: Tensor, y: Tensor) -> float:
-        """Evaluate one weight configuration."""
+        """Evaluate one weight configuration on a single batch."""
         self._set_flat_weights(flat_weights)
         self.model.eval()
         logits = self.model(x)
@@ -94,6 +120,24 @@ class ESTrainer:
         return torch.nn.functional.cross_entropy(
             logits.view(-1, vocab), y.view(-1),
         ).item()
+
+    @torch.no_grad()
+    def _evaluate_multi(
+        self, flat_weights: Tensor, batches: list[tuple[Tensor, Tensor]],
+    ) -> float:
+        """Evaluate weights averaged over multiple batches.
+
+        Args:
+            flat_weights: Flat weight tensor.
+            batches: List of (x, y) batch tuples.
+
+        Returns:
+            Average loss across all batches.
+        """
+        total = 0.0
+        for x, y in batches:
+            total += self._evaluate(flat_weights, x, y)
+        return total / len(batches)
 
     @staticmethod
     def _fitness_shaping(losses: Tensor) -> Tensor:
@@ -116,42 +160,44 @@ class ESTrainer:
         utilities = ranks / (n - 1) - 0.5
         return -utilities
 
-    def _requantize_ternary(self, weights: Tensor) -> Tensor:
-        """Snap continuous weights back to ternary {-1, 0, +1}.
-
-        Uses threshold-based rounding: values above mean absolute
-        value get sign-preserved, below get zeroed.
+    def _get_eval_batches(
+        self, loader_iter: object, dataloader: DataLoader,
+    ) -> tuple[list[tuple[Tensor, Tensor]], object]:
+        """Fetch eval_batches worth of data from the loader.
 
         Args:
-            weights: Continuous weight tensor.
+            loader_iter: Current dataloader iterator.
+            dataloader: The dataloader to reset from.
 
         Returns:
-            Ternary weight tensor.
+            (batches, updated_loader_iter)
         """
-        abs_w = weights.abs()
-        threshold = abs_w.mean()
-        sign = weights.sign()
-        return torch.where(abs_w > threshold, sign, torch.zeros_like(weights))
+        batches: list[tuple[Tensor, Tensor]] = []
+        for _ in range(self.eval_batches):
+            try:
+                x, y = next(loader_iter)
+            except StopIteration:
+                loader_iter = iter(dataloader)
+                x, y = next(loader_iter)
+            batches.append((x.to(self.device), y.to(self.device)))
+        return batches, loader_iter
 
     @torch.no_grad()
-    def train_step(self, x: Tensor, y: Tensor) -> float:
+    def train_step(self, batches: list[tuple[Tensor, Tensor]]) -> float:
         """One ES training step with antithetic sampling.
 
         For each of pop_size noise vectors:
         1. Evaluate weights + sigma*noise (positive perturbation)
         2. Evaluate weights - sigma*noise (antithetic perturbation)
         3. Compute fitness-shaped update from all 2*pop_size evals
-        4. Apply momentum-accelerated update
-        5. Re-quantize to ternary
+        4. Apply momentum-accelerated update with cosine LR
 
         Args:
-            x: Input of shape (batch, seq_len).
-            y: Target of shape (batch, seq_len).
+            batches: List of (x, y) batch tuples for evaluation.
 
         Returns:
-            Loss of the current (unperturbed) weights.
+            Loss of the updated weights.
         """
-        x, y = x.to(self.device), y.to(self.device)
         base_weights = self._get_flat_weights()
 
         noise = torch.randn(
@@ -162,8 +208,8 @@ class ESTrainer:
         for i in range(self.pop_size):
             pos_weights = base_weights + self.sigma * noise[i]
             neg_weights = base_weights - self.sigma * noise[i]
-            all_losses[i * 2] = self._evaluate(pos_weights, x, y)
-            all_losses[i * 2 + 1] = self._evaluate(neg_weights, x, y)
+            all_losses[i * 2] = self._evaluate_multi(pos_weights, batches)
+            all_losses[i * 2 + 1] = self._evaluate_multi(neg_weights, batches)
 
         shaped = self._fitness_shaping(all_losses)
 
@@ -177,20 +223,21 @@ class ESTrainer:
             self.momentum * self._velocity + (1 - self.momentum) * grad_estimate
         )
 
+        current_lr = self._cosine_lr()
         new_weights = (
-            base_weights + self.lr * self._velocity
-            - self.lr * self.weight_decay * base_weights
+            base_weights + current_lr * self._velocity
+            - current_lr * self.weight_decay * base_weights
         )
 
         self._set_flat_weights(new_weights)
-        step_loss = self._evaluate(new_weights, x, y)
+        step_loss = self._evaluate_multi(new_weights, batches)
 
         self.best_loss = min(self.best_loss, step_loss)
         self.step_count += 1
         return step_loss
 
     def train(self, dataloader: DataLoader, steps: int) -> list[float]:
-        """Run ES training loop.
+        """Run ES training loop with cosine LR and multi-batch eval.
 
         Args:
             dataloader: Training data loader.
@@ -199,27 +246,28 @@ class ESTrainer:
         Returns:
             List of losses per step.
         """
+        self.total_steps = steps
         losses: list[float] = []
         loader_iter = iter(dataloader)
         t0 = time.perf_counter()
 
         for step in range(steps):
-            try:
-                x, y = next(loader_iter)
-            except StopIteration:
-                loader_iter = iter(dataloader)
-                x, y = next(loader_iter)
+            batches, loader_iter = self._get_eval_batches(
+                loader_iter, dataloader,
+            )
 
-            loss = self.train_step(x, y)
+            loss = self.train_step(batches)
             losses.append(loss)
 
             if (step + 1) % self.LOG_EVERY == 0:
                 avg = sum(losses[-self.LOG_EVERY :]) / self.LOG_EVERY
                 elapsed = time.perf_counter() - t0
                 sps = (step + 1) / elapsed
+                current_lr = self._cosine_lr()
                 print(
                     f"  step {step + 1:>5} | loss {avg:.4f} | "
-                    f"best {self.best_loss:.4f} | {sps:.1f} steps/s"
+                    f"best {self.best_loss:.4f} | {sps:.1f} steps/s | "
+                    f"lr {current_lr:.5f}"
                 )
 
         return losses
