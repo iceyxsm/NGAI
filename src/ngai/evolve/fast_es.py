@@ -40,7 +40,7 @@ class ActivationPerturbES:
     """
 
     DEFAULT_POP = 32
-    DEFAULT_SIGMA = 0.02
+    DEFAULT_SIGMA = 0.1
     DEFAULT_LR = 0.01
     DEFAULT_MOMENTUM = 0.9
     DEFAULT_WEIGHT_DECAY = 0.001
@@ -140,6 +140,8 @@ class ActivationPerturbES:
         mega_y = y.repeat(n_variants, 1)
 
         hooks = []
+        n_layers = max(1, len(self._linear_layers))
+        layer_sigma = self.sigma / (n_layers ** 0.5)
 
         try:
             for layer, (start, end) in zip(
@@ -179,7 +181,7 @@ class ActivationPerturbES:
                 h = layer.register_forward_hook(
                     _make_hook(
                         pos_noise_w, neg_noise_w, batch_size,
-                        n_variants, self.pop_size, self.sigma,
+                        n_variants, self.pop_size, layer_sigma,
                     )
                 )
                 hooks.append(h)
