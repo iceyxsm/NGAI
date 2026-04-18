@@ -1,1 +1,0 @@
-Device: cuda Loading TinyShakespeare... Vocab: 65, Data: 99,936 seqs Model: 1,067,392 params ES: pop=32 pairs (64 evals), sigma=0.1, lr=0.01- (cosine), momentum=0.9, eval_batches=1 Training for 3000 steps (no backprop)...    step    50 
