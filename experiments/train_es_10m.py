@@ -24,12 +24,12 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 DATA_PATH = Path("data/tinyshakespeare.txt")
 DIM = 256
-N_LAYERS = 8
+N_LAYERS = 8 
 SEQ_LEN = 256  # 2x longer sequences
-BATCH_SIZE = 128  # 4x larger batches
+BATCH_SIZE = 32  # Reduced for VRAM at 8M scale
 STEPS = 3000
 
-POP_SIZE = 64  # 2x population for better gradient estimates
+POP_SIZE = 16  # Reduced for VRAM (8M model × 32 variants = 1GB)
 SIGMA = 0.05
 LR = 0.005
 MOMENTUM = 0.9
