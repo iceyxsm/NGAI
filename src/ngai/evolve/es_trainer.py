@@ -85,11 +85,6 @@ class ESTrainer:
         self._velocity = torch.zeros(self._total_params, device=self.device)
 
         if self.device.type == "cuda":
-            try:
-                self.model = torch.compile(self.model, mode="reduce-overhead")
-            except RuntimeError:
-                pass
-
             from ngai.evolve.stream_eval import MultiStreamEvaluator
             self._stream_eval = MultiStreamEvaluator(
                 self.model, device=self.device,
