@@ -33,7 +33,7 @@ class MultiStreamEvaluator:
         device: CUDA device.
     """
 
-    DEFAULT_STREAMS = 4
+    DEFAULT_STREAMS = 8
 
     def __init__(
         self,
