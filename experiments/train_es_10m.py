@@ -25,11 +25,11 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 DATA_PATH = Path("data/tinyshakespeare.txt")
 DIM = 256
 N_LAYERS = 8
-SEQ_LEN = 128
-BATCH_SIZE = 32
+SEQ_LEN = 256  # 2x longer sequences
+BATCH_SIZE = 128  # 4x larger batches
 STEPS = 3000
 
-POP_SIZE = 32
+POP_SIZE = 64  # 2x population for better gradient estimates
 SIGMA = 0.05
 LR = 0.005
 MOMENTUM = 0.9
