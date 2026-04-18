@@ -90,6 +90,13 @@ class ESTrainer:
             except RuntimeError:
                 pass
 
+            from ngai.evolve.stream_eval import MultiStreamEvaluator
+            self._stream_eval = MultiStreamEvaluator(
+                self.model, device=self.device,
+            )
+        else:
+            self._stream_eval = None
+
     def _cosine_lr(self) -> float:
         """Compute current LR using cosine annealing schedule.
 
@@ -194,7 +201,7 @@ class ESTrainer:
         all_flat_weights: Tensor,
         batches: list[tuple[Tensor, Tensor]],
     ) -> Tensor:
-        """Evaluate all variants with direct weight injection.
+        """Evaluate all variants, using multi-stream if on CUDA.
 
         Args:
             all_flat_weights: Shape (n_variants, total_params).
@@ -203,6 +210,12 @@ class ESTrainer:
         Returns:
             Losses of shape (n_variants,).
         """
+        if self._stream_eval is not None and len(batches) == 1:
+            x, y = batches[0]
+            return self._stream_eval.evaluate_population(
+                all_flat_weights, x, y,
+            )
+
         n_variants = all_flat_weights.shape[0]
         losses = torch.zeros(n_variants, device=self.device)
         for i in range(n_variants):
