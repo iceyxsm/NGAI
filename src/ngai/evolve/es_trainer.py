@@ -217,10 +217,13 @@ class ESTrainer:
             losses[i] = self._evaluate_multi(all_flat_weights[i], batches)
         return losses
 
+    EVAL_CHUNK_SIZE = 16
+
     @torch.no_grad()
     def train_step(self, batches: list[tuple[Tensor, Tensor]]) -> float:
         """One ES training step with antithetic sampling.
 
+        Evaluates variants in chunks to avoid OOM on large models.
         For each of pop_size noise vectors:
         1. Evaluate weights + sigma*noise (positive perturbation)
         2. Evaluate weights - sigma*noise (antithetic perturbation)
@@ -239,22 +242,30 @@ class ESTrainer:
             self.pop_size, self._total_params, device=self.device,
         )
 
-        # Build all perturbed weight vectors: [pos_0, neg_0, pos_1, neg_1, ...]
-        pos_weights = base_weights.unsqueeze(0) + self.sigma * noise
-        neg_weights = base_weights.unsqueeze(0) - self.sigma * noise
-        # Interleave: (2*pop_size, total_params)
-        all_weights = torch.stack(
-            [pos_weights, neg_weights], dim=1,
-        ).view(-1, self._total_params)
+        all_losses = torch.zeros(self.pop_size * 2, device=self.device)
+        chunk = self.EVAL_CHUNK_SIZE
 
-        all_losses = self._evaluate_all_variants(all_weights, batches)
+        for start in range(0, self.pop_size, chunk):
+            end = min(start + chunk, self.pop_size)
+            noise_chunk = noise[start:end]
+            pos_chunk = base_weights.unsqueeze(0) + self.sigma * noise_chunk
+            neg_chunk = base_weights.unsqueeze(0) - self.sigma * noise_chunk
+            chunk_weights = torch.stack(
+                [pos_chunk, neg_chunk], dim=1,
+            ).view(-1, self._total_params)
+
+            chunk_losses = self._evaluate_all_variants(chunk_weights, batches)
+            loss_start = start * 2
+            loss_end = loss_start + chunk_losses.shape[0]
+            all_losses[loss_start:loss_end] = chunk_losses
+            del chunk_weights, pos_chunk, neg_chunk
+            torch.cuda.empty_cache()
 
         shaped = self._fitness_shaping(all_losses)
 
-        # Vectorized gradient estimate: sum of (shaped_pos - shaped_neg) * noise
-        pos_shaped = shaped[0::2]  # even indices
-        neg_shaped = shaped[1::2]  # odd indices
-        diffs = (pos_shaped - neg_shaped).unsqueeze(1)  # (pop_size, 1)
+        pos_shaped = shaped[0::2]
+        neg_shaped = shaped[1::2]
+        diffs = (pos_shaped - neg_shaped).unsqueeze(1)
         grad_estimate = (diffs * noise).sum(dim=0) / (self.pop_size * self.sigma)
 
         self._velocity = (

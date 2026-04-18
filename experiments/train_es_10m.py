@@ -29,7 +29,7 @@ SEQ_LEN = 256  # 2x longer sequences
 BATCH_SIZE = 32  # Reduced for VRAM at 8M scale
 STEPS = 3000
 
-POP_SIZE = 16  # Reduced for VRAM (8M model × 32 variants = 1GB)
+POP_SIZE = 64  # Large pop for 8M params (chunked eval avoids OOM)
 SIGMA = 0.05
 LR = 0.005
 MOMENTUM = 0.9
