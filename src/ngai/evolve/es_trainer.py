@@ -65,7 +65,6 @@ class ESTrainer:
         momentum: float = DEFAULT_MOMENTUM,
         weight_decay: float = DEFAULT_WEIGHT_DECAY,
         eval_batches: int = DEFAULT_EVAL_BATCHES,
-        use_vmap: bool = False,
         device: torch.device | None = None,
     ) -> None:
         self.model = model
@@ -84,17 +83,6 @@ class ESTrainer:
 
         self._total_params = sum(p.numel() for p in model.parameters())
         self._velocity = torch.zeros(self._total_params, device=self.device)
-
-        self._vmap_eval = None
-        if use_vmap:
-            try:
-                from ngai.evolve.vmap_eval import VmapPopulationEvaluator
-                self._vmap_eval = VmapPopulationEvaluator(model, self.device)
-            except ImportError:
-                pass
-
-        from ngai.evolve.batched_es import MegaBatchEvaluator
-        self._mega_eval = MegaBatchEvaluator(model, self.device)
 
     def _cosine_lr(self) -> float:
         """Compute current LR using cosine annealing schedule.
@@ -200,7 +188,7 @@ class ESTrainer:
         all_flat_weights: Tensor,
         batches: list[tuple[Tensor, Tensor]],
     ) -> Tensor:
-        """Evaluate all variants using fast zero-copy weight injection.
+        """Evaluate all variants with direct weight injection.
 
         Args:
             all_flat_weights: Shape (n_variants, total_params).
@@ -209,19 +197,11 @@ class ESTrainer:
         Returns:
             Losses of shape (n_variants,).
         """
-        x, y = batches[0]
-        if len(batches) == 1:
-            return self._mega_eval.evaluate_population_fast(
-                all_flat_weights, x, y,
-            )
-
         n_variants = all_flat_weights.shape[0]
         losses = torch.zeros(n_variants, device=self.device)
-        for bx, by in batches:
-            losses += self._mega_eval.evaluate_population_fast(
-                all_flat_weights, bx, by,
-            )
-        return losses / len(batches)
+        for i in range(n_variants):
+            losses[i] = self._evaluate_multi(all_flat_weights[i], batches)
+        return losses
 
     @torch.no_grad()
     def train_step(self, batches: list[tuple[Tensor, Tensor]]) -> float:
@@ -273,7 +253,7 @@ class ESTrainer:
             - current_lr * self.weight_decay * base_weights
         )
 
-        self._mega_eval._inject_weights(new_weights)
+        self._set_flat_weights(new_weights)
         step_loss = self._evaluate_multi(new_weights, batches)
 
         self.best_loss = min(self.best_loss, step_loss)
