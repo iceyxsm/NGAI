@@ -84,6 +84,12 @@ class ESTrainer:
         self._total_params = sum(p.numel() for p in model.parameters())
         self._velocity = torch.zeros(self._total_params, device=self.device)
 
+        if self.device.type == "cuda":
+            try:
+                self.model = torch.compile(self.model, mode="reduce-overhead")
+            except RuntimeError:
+                pass
+
     def _cosine_lr(self) -> float:
         """Compute current LR using cosine annealing schedule.
 

@@ -106,6 +106,12 @@ class EggrollTrainer:
         self._map_parameters()
         self._velocity = torch.zeros(self._total_params, device=self.device)
 
+        if self.device.type == "cuda":
+            try:
+                self.model = torch.compile(self.model, mode="reduce-overhead")
+            except RuntimeError:
+                pass
+
     def _map_parameters(self) -> None:
         """Map model parameters to linear layers and non-linear params."""
         linear_param_ids: set[int] = set()
