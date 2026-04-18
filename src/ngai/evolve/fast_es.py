@@ -14,7 +14,6 @@ operation. This turns 64 kernel launches into 1.
 Expected speedup: 15-20x over serial evaluation.
 """
 
-import math
 import time
 
 import torch
