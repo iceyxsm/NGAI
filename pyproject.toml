@@ -6,10 +6,10 @@ readme = "README.md"
 authors = [
     { name = "iceyxsm", email = "shivmunot9@gmail.com" }
 ]
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 dependencies = [
     "numpy",
-    "torch>=2.11.0",
+    "torch>=2.0.0",
 ]
 
 [dependency-groups]
@@ -21,8 +21,11 @@ dev = [
 ]
 
 [build-system]
-requires = ["uv_build>=0.10.7,<0.11.0"]
-build-backend = "uv_build"
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.ruff]
 target-version = "py312"
