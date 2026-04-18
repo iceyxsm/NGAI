@@ -6,6 +6,7 @@ maximum GPU utilization without backpropagation.
 """
 
 from ngai.evolve.cuda_batch_eval import BatchedPopulationEvaluator
+from ngai.evolve.cuda_graph_eval import CUDAGraphEvaluator
 from ngai.evolve.es_trainer import ESTrainer
 from ngai.evolve.evaluator import GoodnessEvaluator
 from ngai.evolve.guided_mutator import GuidedMutator
@@ -16,6 +17,7 @@ from ngai.evolve.trainer import EvolveTrainer
 
 __all__ = [
     "BatchedPopulationEvaluator",
+    "CUDAGraphEvaluator",
     "ESTrainer",
     "EvolveTrainer",
     "GoodnessEvaluator",

@@ -84,6 +84,12 @@ class ESTrainer:
         self._total_params = sum(p.numel() for p in model.parameters())
         self._velocity = torch.zeros(self._total_params, device=self.device)
 
+        self._graph_eval = None
+        if self.device.type == "cuda":
+            from ngai.evolve.cuda_graph_eval import CUDAGraphEvaluator
+            self._graph_eval = CUDAGraphEvaluator(model, self.device)
+        self._graph_captured = False
+
     def _cosine_lr(self) -> float:
         """Compute current LR using cosine annealing schedule.
 
@@ -188,7 +194,7 @@ class ESTrainer:
         all_flat_weights: Tensor,
         batches: list[tuple[Tensor, Tensor]],
     ) -> Tensor:
-        """Evaluate all variants with direct weight injection.
+        """Evaluate all variants, using CUDA graphs if available.
 
         Args:
             all_flat_weights: Shape (n_variants, total_params).
@@ -197,6 +203,21 @@ class ESTrainer:
         Returns:
             Losses of shape (n_variants,).
         """
+        x, y = batches[0]
+
+        if self._graph_eval is not None and len(batches) == 1:
+            if not self._graph_captured:
+                try:
+                    self._graph_eval.capture(x, y)
+                    self._graph_captured = True
+                except RuntimeError:
+                    self._graph_eval = None
+
+            if self._graph_captured:
+                return self._graph_eval.evaluate_population(
+                    all_flat_weights, x, y,
+                )
+
         n_variants = all_flat_weights.shape[0]
         losses = torch.zeros(n_variants, device=self.device)
         for i in range(n_variants):
