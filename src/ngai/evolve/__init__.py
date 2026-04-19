@@ -11,6 +11,7 @@ from ngai.evolve.es_trainer import ESTrainer
 from ngai.evolve.evaluator import GoodnessEvaluator
 from ngai.evolve.guided_mutator import GuidedMutator
 from ngai.evolve.hybrid_trainer import HybridEvolveTrainer
+from ngai.evolve.layerwise_es import LayerwiseESTrainer
 from ngai.evolve.mutator import TernaryMutator
 from ngai.evolve.population import Population
 from ngai.evolve.stream_eval import MultiStreamEvaluator
@@ -24,6 +25,7 @@ __all__ = [
     "GoodnessEvaluator",
     "GuidedMutator",
     "HybridEvolveTrainer",
+    "LayerwiseESTrainer",
     "MultiStreamEvaluator",
     "Population",
     "TernaryMutator",
