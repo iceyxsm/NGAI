@@ -8,9 +8,11 @@ Perturbing 1M params with pop=32 gives the same signal quality as
 perturbing the full 1M model did. We cycle through layers each step,
 so every N_LAYERS steps, all parameters have been updated.
 
-This is analogous to coordinate descent vs full gradient descent:
-- Full ES: update all params simultaneously (needs huge population)
-- Layer-wise ES: update one layer per step (needs small population)
+Optimizations (same algorithm, same math):
+- Deferred CUDA sync: collect losses as GPU tensors, sync once
+- Vectorized fitness shaping: argsort instead of Python loop
+- Pre-scaled noise: compute sigma*noise once, reuse for pos/neg
+- Fast single-param injection: skip Python loop for common case
 """
 
 import time
@@ -111,15 +113,19 @@ class LayerwiseESTrainer:
 
     def _set_group_flat(self, group_idx: int, flat: Tensor) -> None:
         """Set parameters for one group from flat tensor."""
+        params = self._param_groups[group_idx]["params"]
+        if len(params) == 1:
+            params[0].data.copy_(flat.view(params[0].shape))
+            return
         offset = 0
-        for p in self._param_groups[group_idx]["params"]:
+        for p in params:
             numel = p.numel()
             p.data.copy_(flat[offset : offset + numel].view(p.shape))
             offset += numel
 
     @torch.no_grad()
-    def _evaluate(self, x: Tensor, y: Tensor) -> float:
-        """Evaluate current model weights on a single batch."""
+    def _forward_loss(self, x: Tensor, y: Tensor) -> Tensor:
+        """Forward pass returning loss as GPU tensor (no sync)."""
         self.model.eval()
         logits = self.model(x)
         if isinstance(logits, tuple):
@@ -127,13 +133,13 @@ class LayerwiseESTrainer:
         vocab = logits.shape[-1]
         return torch.nn.functional.cross_entropy(
             logits.view(-1, vocab), y.view(-1),
-        ).item()
+        )
 
     @staticmethod
     def _fitness_shaping(losses: Tensor) -> Tensor:
-        """Rank-based fitness shaping.
+        """Vectorized rank-based fitness shaping.
 
-        Converts raw losses to rank-based utilities in [-0.5, 0.5].
+        Uses double argsort for GPU-native ranking without Python loops.
 
         Args:
             losses: Raw loss values of shape (n,).
@@ -142,10 +148,10 @@ class LayerwiseESTrainer:
             Shaped fitness of shape (n,), centered around 0.
         """
         n = losses.shape[0]
-        ranks = torch.zeros_like(losses)
-        sorted_indices = losses.argsort()
-        for rank, idx in enumerate(sorted_indices):
-            ranks[idx] = rank
+        ranks = torch.empty_like(losses)
+        ranks[losses.argsort()] = torch.arange(
+            n, dtype=losses.dtype, device=losses.device,
+        )
         utilities = ranks / (n - 1) - 0.5
         return -utilities
 
@@ -156,8 +162,7 @@ class LayerwiseESTrainer:
         """One ES step on a single parameter group.
 
         Perturbs only the target group's parameters while keeping
-        all other layers frozen. This gives a clean gradient signal
-        in the reduced-dimensional subspace.
+        all other layers frozen. Uses deferred sync for pipelining.
 
         Args:
             x: Input batch of shape (batch, seq_len).
@@ -167,26 +172,22 @@ class LayerwiseESTrainer:
         Returns:
             Loss after the update.
         """
-        group = self._param_groups[group_idx]
         base_weights = self._get_group_flat(group_idx)
-        n_params = group["numel"]
 
         noise = torch.randn(
-            self.pop_size, n_params, device=self.device,
+            self.pop_size, self._param_groups[group_idx]["numel"],
+            device=self.device,
         )
+        scaled_noise = self.sigma * noise
 
-        losses = torch.zeros(self.pop_size * 2, device=self.device)
+        losses = torch.empty(self.pop_size * 2, device=self.device)
 
         for i in range(self.pop_size):
-            self._set_group_flat(
-                group_idx, base_weights + self.sigma * noise[i],
-            )
-            losses[i * 2] = self._evaluate(x, y)
+            self._set_group_flat(group_idx, base_weights + scaled_noise[i])
+            losses[i * 2] = self._forward_loss(x, y)
 
-            self._set_group_flat(
-                group_idx, base_weights - self.sigma * noise[i],
-            )
-            losses[i * 2 + 1] = self._evaluate(x, y)
+            self._set_group_flat(group_idx, base_weights - scaled_noise[i])
+            losses[i * 2 + 1] = self._forward_loss(x, y)
 
         self._set_group_flat(group_idx, base_weights)
 
@@ -207,7 +208,7 @@ class LayerwiseESTrainer:
         )
         self._set_group_flat(group_idx, new_weights)
 
-        step_loss = self._evaluate(x, y)
+        step_loss = self._forward_loss(x, y).item()
         self.best_loss = min(self.best_loss, step_loss)
         self.step_count += 1
         return step_loss
