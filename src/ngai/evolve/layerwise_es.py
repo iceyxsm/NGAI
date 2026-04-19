@@ -1,18 +1,13 @@
-"""Layer-wise Evolution Strategy trainer.
+"""Layer-wise Evolution Strategy with cached forward passes.
 
-Instead of perturbing all parameters at once (which requires O(d)
-population size for d-dimensional space), perturb one layer at a time.
+Perturbs one layer at a time and caches activations from unchanged
+layers. When perturbing layer K, layers 0..K-1 produce identical
+output for all perturbations, so we compute them once and reuse.
 
-Key insight: an 8M param model with 8 layers has ~1M params per layer.
-Perturbing 1M params with pop=32 gives the same signal quality as
-perturbing the full 1M model did. We cycle through layers each step,
-so every N_LAYERS steps, all parameters have been updated.
-
-Optimizations (same algorithm, same math):
-- Deferred CUDA sync: collect losses as GPU tensors, sync once
-- Vectorized fitness shaping: argsort instead of Python loop
-- Pre-scaled noise: compute sigma*noise once, reuse for pos/neg
-- Fast single-param injection: skip Python loop for common case
+This cuts forward pass cost by ~50% on average:
+- Perturbing layer 0: no cache benefit (all layers change)
+- Perturbing layer 7: cache layers 0-6, only run layer 7 + head
+- Average across 8 layers: ~50% compute saved
 """
 
 import time
@@ -24,11 +19,7 @@ from torch.utils.data import DataLoader
 
 
 class LayerwiseESTrainer:
-    """ES trainer that perturbs one parameter group at a time.
-
-    Cycles through model parameter groups (layers), applying ES
-    updates to each in turn. This reduces the effective search
-    dimensionality from total_params to max_layer_params.
+    """ES trainer with activation caching for layer-wise perturbation.
 
     Args:
         model: The NGAI model to train.
@@ -76,13 +67,10 @@ class LayerwiseESTrainer:
             for g in self._param_groups
         ]
         self._total_params = sum(p.numel() for p in model.parameters())
+        self._block_map = self._map_groups_to_blocks()
 
     def _build_param_groups(self) -> list[dict]:
-        """Group parameters by model block for layer-wise updates.
-
-        Returns:
-            List of dicts with 'params', 'numel', 'name' for each group.
-        """
+        """Group parameters by model block for layer-wise updates."""
         groups: list[dict] = []
         for name, module in self.model.named_modules():
             direct_params = list(module.parameters(recurse=False))
@@ -105,6 +93,21 @@ class LayerwiseESTrainer:
             })
         return groups
 
+    def _map_groups_to_blocks(self) -> dict[int, int]:
+        """Map each param group to its block index (-1 for non-block)."""
+        block_map: dict[int, int] = {}
+        for gi, group in enumerate(self._param_groups):
+            name = group["name"]
+            block_map[gi] = -1
+            if "blocks." in name:
+                try:
+                    block_map[gi] = int(
+                        name.split("blocks.")[1].split(".")[0],
+                    )
+                except (ValueError, IndexError):
+                    pass
+        return block_map
+
     def _get_group_flat(self, group_idx: int) -> Tensor:
         """Flatten parameters for one group."""
         return torch.cat([
@@ -125,7 +128,7 @@ class LayerwiseESTrainer:
 
     @torch.no_grad()
     def _forward_loss(self, x: Tensor, y: Tensor) -> Tensor:
-        """Forward pass returning loss as GPU tensor (no sync)."""
+        """Full forward pass returning loss as GPU tensor."""
         self.model.eval()
         logits = self.model(x)
         if isinstance(logits, tuple):
@@ -135,18 +138,53 @@ class LayerwiseESTrainer:
             logits.view(-1, vocab), y.view(-1),
         )
 
-    @staticmethod
-    def _fitness_shaping(losses: Tensor) -> Tensor:
-        """Vectorized rank-based fitness shaping.
-
-        Uses double argsort for GPU-native ranking without Python loops.
+    @torch.no_grad()
+    def _suffix_forward_loss(
+        self, cached_x: Tensor, from_block: int, y: Tensor,
+    ) -> Tensor:
+        """Forward from cached activation through remaining blocks.
 
         Args:
-            losses: Raw loss values of shape (n,).
+            cached_x: Activation after blocks[0..from_block-1].
+            from_block: First block to run.
+            y: Target for loss computation.
 
         Returns:
-            Shaped fitness of shape (n,), centered around 0.
+            Loss as GPU tensor.
         """
+        x = cached_x
+        for i in range(from_block, len(self.model.blocks)):
+            x, _ = self.model.blocks[i](x, None)
+        x = self.model.norm(x)
+        logits = self.model.head(x)
+        if isinstance(logits, tuple):
+            logits = logits[0]
+        vocab = logits.shape[-1]
+        return torch.nn.functional.cross_entropy(
+            logits.view(-1, vocab), y.view(-1),
+        )
+
+    @torch.no_grad()
+    def _compute_prefix(
+        self, input_ids: Tensor, up_to_block: int,
+    ) -> Tensor:
+        """Run embedding + blocks[0..up_to_block-1], return activation.
+
+        Args:
+            input_ids: Token indices of shape (batch, seq_len).
+            up_to_block: Stop before this block index.
+
+        Returns:
+            Cached activation tensor.
+        """
+        x = self.model.embedding(input_ids)
+        for i in range(min(up_to_block, len(self.model.blocks))):
+            x, _ = self.model.blocks[i](x, None)
+        return x
+
+    @staticmethod
+    def _fitness_shaping(losses: Tensor) -> Tensor:
+        """Vectorized rank-based fitness shaping."""
         n = losses.shape[0]
         ranks = torch.empty_like(losses)
         ranks[losses.argsort()] = torch.arange(
@@ -159,10 +197,10 @@ class LayerwiseESTrainer:
     def train_step(
         self, x: Tensor, y: Tensor, group_idx: int,
     ) -> float:
-        """One ES step on a single parameter group.
+        """One ES step with activation caching.
 
-        Perturbs only the target group's parameters while keeping
-        all other layers frozen. Uses deferred sync for pipelining.
+        If the perturbed group belongs to block K, caches activations
+        from blocks 0..K-1 and only re-runs blocks K..N per eval.
 
         Args:
             x: Input batch of shape (batch, seq_len).
@@ -182,12 +220,26 @@ class LayerwiseESTrainer:
 
         losses = torch.empty(self.pop_size * 2, device=self.device)
 
+        block_idx = self._block_map[group_idx]
+        use_cache = block_idx > 0
+        cached_x = self._compute_prefix(x, block_idx) if use_cache else None
+
         for i in range(self.pop_size):
             self._set_group_flat(group_idx, base_weights + scaled_noise[i])
-            losses[i * 2] = self._forward_loss(x, y)
+            if use_cache:
+                losses[i * 2] = self._suffix_forward_loss(
+                    cached_x, block_idx, y,
+                )
+            else:
+                losses[i * 2] = self._forward_loss(x, y)
 
             self._set_group_flat(group_idx, base_weights - scaled_noise[i])
-            losses[i * 2 + 1] = self._forward_loss(x, y)
+            if use_cache:
+                losses[i * 2 + 1] = self._suffix_forward_loss(
+                    cached_x, block_idx, y,
+                )
+            else:
+                losses[i * 2 + 1] = self._forward_loss(x, y)
 
         self._set_group_flat(group_idx, base_weights)
 
@@ -216,9 +268,6 @@ class LayerwiseESTrainer:
     def train(self, dataloader: DataLoader, steps: int) -> list[float]:
         """Run layer-wise ES training loop.
 
-        Cycles through parameter groups round-robin. Each step
-        updates one group, so a full cycle takes n_groups steps.
-
         Args:
             dataloader: Training data loader.
             steps: Number of training steps.
@@ -233,9 +282,11 @@ class LayerwiseESTrainer:
 
         group_names = [g["name"] for g in self._param_groups]
         group_sizes = [g["numel"] for g in self._param_groups]
-        print(f"  Layer-wise ES: {self._n_groups} groups")
+        print(f"  Layer-wise ES: {self._n_groups} groups (cached fwd)")
         for i, (name, size) in enumerate(zip(group_names, group_sizes)):
-            print(f"    [{i}] {name}: {size:,} params")
+            blk = self._block_map[i]
+            tag = f"cache 0-{blk - 1}" if blk > 0 else "full"
+            print(f"    [{i}] {name}: {size:,} params ({tag})")
 
         for step in range(steps):
             try:
